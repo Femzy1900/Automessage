@@ -418,10 +418,61 @@ async function sendMessageToProfile(page, profile, message, options = {}) {
       await loadCookies(page, email);
     }
     
-    // Navigate to profile URL
+    // Navigate with retry mechanism and longer timeout
     console.log('🌐 Navigating to profile...');
-    await page.goto(profile.url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await delay(rand(2000, 4000));
+    let navigationSuccess = false;
+    let attempt = 0;
+    const maxAttempts = 3;
+    
+    while (!navigationSuccess && attempt < maxAttempts) {
+      try {
+        attempt++;
+        console.log(`   Attempt ${attempt}/${maxAttempts}...`);
+        
+        // Try different wait conditions for Facebook
+        await page.goto(profile.url, { 
+          waitUntil: 'domcontentloaded', // Less strict than networkidle2
+          timeout: 45000 
+        });
+        
+        // Wait for basic page elements to load
+        await delay(rand(3000, 6000));
+        
+        // Check if page actually loaded
+        const pageLoaded = await page.evaluate(() => {
+          return document.readyState === 'complete' || 
+                 document.querySelector('body') !== null;
+        });
+        
+        if (pageLoaded) {
+          navigationSuccess = true;
+          console.log('✅ Page loaded successfully');
+        } else {
+          throw new Error('Page did not load properly');
+        }
+        
+      } catch (navError) {
+        console.log(`⚠️ Navigation attempt ${attempt} failed: ${navError.message}`);
+        if (attempt === maxAttempts) {
+          throw new Error(`Failed to load profile after ${maxAttempts} attempts: ${navError.message}`);
+        }
+        await delay(rand(2000, 4000)); // Wait before retry
+      }
+    }
+    
+    // Check if we're blocked or need login
+    const isBlocked = await page.evaluate(() => {
+      const bodyText = document.body.textContent.toLowerCase();
+      return bodyText.includes('blocked') || 
+             bodyText.includes('temporarily restricted') ||
+             bodyText.includes('error') ||
+             bodyText.includes('not found') ||
+             bodyText.includes('page not available');
+    });
+    
+    if (isBlocked) {
+      throw new Error('Profile appears to be blocked, restricted, or not found');
+    }
     
     // Check if login is required
     const needsLogin = await isLoginRequired(page);
@@ -432,77 +483,142 @@ async function sendMessageToProfile(page, profile, message, options = {}) {
       
       // Navigate back to profile after login
       console.log('🔄 Returning to profile after login...');
-      await page.goto(profile.url, { waitUntil: 'networkidle2', timeout: 60000 });
-      await delay(rand(2000, 4000));
+      await page.goto(profile.url, { 
+        waitUntil: 'domcontentloaded', 
+        timeout: 45000 
+      });
+      await delay(rand(3000, 5000));
     }
     
-    // Human-like behavior
+    // Human-like behavior - scroll to simulate reading
+    console.log('👀 Simulating human browsing behavior...');
     await humanScroll(page, rand(200, 500), rand(3, 6));
-    await delay(rand(1000, 2000));
+    await delay(rand(2000, 4000));
     
-    // Look for message button/link (Facebook-specific)
-    const messageButton = await page.$('a[href*="/messages/"], a[href*="messenger.com"], [aria-label*="Message"], [aria-label*="Send message"]');
+    // Look for messaging interface
+    console.log('🔍 Looking for messaging interface...');
+    
+    // Facebook messaging selectors (multiple fallbacks)
+    const messagingSelectors = [
+      'a[href*="/messages/"]',
+      'a[href*="messenger.com"]', 
+      '[aria-label*="Message"]',
+      '[aria-label*="Send message"]',
+      'a[role="link"]:has-text("Message")',
+      'div[role="button"]:has-text("Message")',
+      '[data-testid*="message"]'
+    ];
+    
+    let messageButton = null;
+    for (const selector of messagingSelectors) {
+      try {
+        messageButton = await page.$(selector);
+        if (messageButton) {
+          console.log(`💬 Found message button with selector: ${selector}`);
+          break;
+        }
+      } catch (e) {
+        // Continue to next selector
+      }
+    }
     
     if (messageButton) {
-      console.log('💬 Found message button, clicking...');
+      console.log('🖱️ Clicking message button...');
       await humanClick(page, messageButton);
+      
+      // Wait for messenger to load with multiple possible outcomes
+      await Promise.race([
+        page.waitForSelector('div[contenteditable="true"]', { timeout: 15000 }),
+        page.waitForSelector('textarea', { timeout: 15000 }),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
+        delay(10000) // Fallback timeout
+      ]);
+      
       await delay(rand(2000, 4000));
       
-      // Wait for messenger interface to load
-      await page.waitForSelector('div[contenteditable="true"], textarea, input[placeholder*="message"]', { timeout: 15000 });
-      await delay(rand(1000, 2000));
+      // Look for message input with multiple selectors
+      const messageInputSelectors = [
+        'div[contenteditable="true"][data-testid]',
+        'div[contenteditable="true"][aria-label*="message"]',
+        'div[contenteditable="true"][placeholder*="message"]',
+        'textarea[placeholder*="message"]',
+        'input[placeholder*="message"]',
+        'div[contenteditable="true"]'
+      ];
       
-      // Find and click message input
-      const messageInput = await page.$('div[contenteditable="true"][data-testid], div[contenteditable="true"][aria-label*="message"], textarea[placeholder*="message"]');
+      let messageInput = null;
+      for (const selector of messageInputSelectors) {
+        try {
+          messageInput = await page.$(selector);
+          if (messageInput) {
+            console.log(`⌨️ Found message input with selector: ${selector}`);
+            break;
+          }
+        } catch (e) {
+          // Continue to next selector
+        }
+      }
       
       if (messageInput) {
-        console.log('⌨️ Typing message...');
+        console.log('📝 Typing message...');
         await humanClick(page, messageInput);
         await delay(rand(500, 1000));
-        await humanType(messageInput, message, { min: 100, max: 250 });
+        
+        // Handle contenteditable vs input differently
+        const isContentEditable = await messageInput.evaluate(el => el.contentEditable === 'true');
+        
+        if (isContentEditable) {
+          await messageInput.focus();
+          await page.keyboard.down('Control');
+          await page.keyboard.press('a');
+          await page.keyboard.up('Control');
+          await delay(100);
+          await messageInput.type(message);
+        } else {
+          await humanType(messageInput, message, { min: 100, max: 250 });
+        }
+        
         await delay(rand(1000, 2000));
         
         // Send message
-        const sendButton = await page.$('button[type="submit"], [aria-label*="Send"], [data-testid*="send"]');
+        const sendSelectors = [
+          'button[type="submit"]',
+          '[aria-label*="Send"]',
+          '[data-testid*="send"]',
+          'button:has-text("Send")',
+          '[role="button"][tabindex="0"]'
+        ];
+        
+        let sendButton = null;
+        for (const selector of sendSelectors) {
+          try {
+            sendButton = await page.$(selector);
+            if (sendButton) {
+              console.log(`📤 Found send button with selector: ${selector}`);
+              break;
+            }
+          } catch (e) {
+            // Continue to next selector
+          }
+        }
+        
         if (sendButton) {
           console.log('📤 Sending message...');
           await humanClick(page, sendButton);
-          await delay(rand(2000, 3000));
+          await delay(rand(2000, 4000));
         } else {
-          // Try pressing Enter
+          // Try pressing Enter as fallback
+          console.log('📤 Trying Enter key to send...');
           await page.keyboard.press('Enter');
-          await delay(rand(2000, 3000));
+          await delay(rand(2000, 4000));
         }
         
         console.log('✅ Message sent successfully!');
       } else {
-        throw new Error('Message input field not found');
+        throw new Error('Message input field not found in messenger interface');
       }
     } else {
-      // Alternative: Look for direct message compose area on profile
-      console.log('🔍 Looking for direct message compose area...');
-      
-      const directMessageArea = await page.$('div[contenteditable="true"], textarea[placeholder*="Write"], input[placeholder*="message"]');
-      if (directMessageArea) {
-        await humanClick(page, directMessageArea);
-        await delay(rand(500, 1000));
-        await humanType(directMessageArea, message, { min: 100, max: 250 });
-        await delay(rand(1000, 2000));
-        
-        // Look for send button near the text area
-        const sendBtn = await page.$('button[type="submit"], [aria-label*="Send"], button:has-text("Send")');
-        if (sendBtn) {
-          await humanClick(page, sendBtn);
-          await delay(rand(2000, 3000));
-        } else {
-          await page.keyboard.press('Enter');
-          await delay(rand(2000, 3000));
-        }
-        
-        console.log('✅ Direct message sent!');
-      } else {
-        throw new Error('No messaging interface found on this profile');
-      }
+      throw new Error('No messaging interface found on this profile. Profile may not allow messages or may be private.');
     }
     
     const duration = Date.now() - start;
@@ -536,7 +652,7 @@ async function launchBrowser(opts = {}) {
   
   const browser = await puppeteer.launch({
     headless,
-    defaultViewport: DEFAULT_VIEWPORT,
+    defaultViewport: null, // Use actual viewport size
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -545,11 +661,20 @@ async function launchBrowser(opts = {}) {
       '--disable-features=VizDisplayCompositor',
       '--disable-web-security',
       '--disable-features=site-per-process',
-      '--flag-switches-begin',
+      '--disable-extensions',
+      '--disable-plugins',
+      '--disable-images', // Speed up loading
+      '--disable-javascript-harmony-shipping',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-field-trial-config',
+      '--disable-back-forward-cache',
       '--disable-ipc-flooding-protection',
-      '--flag-switches-end'
+      '--window-size=1366,768'
     ],
     ignoreDefaultArgs: ['--enable-automation'],
+    slowMo: 50, // Add slight delay between actions
     ...opts
   });
   
@@ -567,7 +692,7 @@ async function processAll(profiles, message) {
   const browser = await launchBrowser();
   const page = await browser.newPage();
 
-  // Set realistic headers and user agent
+  // Set realistic headers and user agent for Facebook
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
@@ -575,14 +700,58 @@ async function processAll(profiles, message) {
   await page.setExtraHTTPHeaders({
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
     'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Cache-Control': 'max-age=0'
+  });
+
+  // Override webdriver detection
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined,
+    });
+    
+    // Remove automation indicators
+    delete window.chrome.runtime.onConnect;
+    
+    // Mock plugins
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5],
+    });
+    
+    // Mock languages
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+    });
   });
 
   const results = [];
   
   try {
     console.log(`📋 Processing ${profiles.length} profiles with message: "${message}"`);
+    
+    // First, try to establish a session by going to Facebook homepage
+    console.log('🏠 Establishing Facebook session...');
+    try {
+      await page.goto('https://www.facebook.com', { 
+        waitUntil: 'domcontentloaded', 
+        timeout: 30000 
+      });
+      await delay(rand(2000, 4000));
+      
+      // Load existing cookies if available
+      if (email) {
+        await loadCookies(page, email);
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await delay(rand(2000, 3000));
+      }
+    } catch (homeError) {
+      console.log('⚠️ Could not load Facebook homepage, continuing anyway...');
+    }
     
     // Process each profile
     for (let i = 0; i < profiles.length; i++) {
@@ -591,9 +760,9 @@ async function processAll(profiles, message) {
       console.log(`\n📍 Profile ${i + 1}/${profiles.length}`);
       
       try {
-        // Add random delay between profiles (2-8 seconds)
+        // Add random delay between profiles (3-10 seconds)
         if (i > 0) {
-          const pauseTime = rand(2000, 8000);
+          const pauseTime = rand(3000, 10000);
           console.log(`⏸️ Pausing ${pauseTime}ms between profiles...`);
           await delay(pauseTime);
         }
