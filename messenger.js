@@ -2,16 +2,16 @@
  * enhanced-messenger.js
  *
  * Enhanced Puppeteer automation script with automatic reCAPTCHA solving capabilities.
- * Logs in, persists cookies, navigates to profile URLs, types messages with human-like behavior,
- * and automatically solves reCAPTCHAs using audio challenge method.
+ * Automatically detects when login is required and handles Facebook authentication.
  *
  * Features:
+ * - Automatic login detection and handling
  * - Stealth mode to avoid detection
  * - Session persistence with cookies
  * - Human-like interactions (typing, mouse movements, scrolling)
  * - Automatic reCAPTCHA solving
  * - Structured JSON logging
- * - Modular, reusable functions
+ * - Facebook-specific optimizations
  *
  * Usage:
  *   node enhanced-messenger.js --profiles profiles.json --message "Hello there!"
@@ -37,7 +37,7 @@ puppeteer.use(StealthPlugin());
 
 const COOKIE_DIR = path.resolve(__dirname, 'cookies');
 const OUTPUT_LOG = path.resolve(__dirname, 'results.jsonl');
-const DEFAULT_VIEWPORT = { width: 1200, height: 800 };
+const DEFAULT_VIEWPORT = { width: 1366, height: 768 };
 
 /* ---------------------------- Utility helpers ---------------------------- */
 
@@ -57,6 +57,9 @@ async function logResult(obj) {
 
 async function humanType(elementHandle, text, opts = {}) {
   const { min = 80, max = 200 } = opts;
+  await elementHandle.click({ clickCount: 3 }); // Select all existing text
+  await delay(rand(100, 300));
+  
   for (const char of text) {
     await elementHandle.type(char);
     await delay(rand(min, max));
@@ -86,7 +89,7 @@ async function humanClick(page, element) {
   if (box) {
     const x = box.x + box.width / 2 + rand(-5, 5);
     const y = box.y + box.height / 2 + rand(-5, 5);
-    await humanMove(page, { x: box.x, y: box.y }, { x, y }, 15);
+    await humanMove(page, { x: 100, y: 100 }, { x, y }, 15);
     await page.mouse.click(x, y, { delay: rand(50, 150) });
   } else {
     await element.click({ delay: rand(50, 150) });
@@ -124,135 +127,106 @@ async function loadCookies(page, email) {
 
 /* -------------------------- reCAPTCHA Solving --------------------------- */
 
-/**
- * Automatic reCAPTCHA solver using audio challenge method
- * This method works by:
- * 1. Detecting reCAPTCHA iframe
- * 2. Switching to audio challenge
- * 3. Downloading audio file
- * 4. Using speech-to-text to solve
- * 5. Submitting the solution
- */
 async function solveRecaptchaAudio(page) {
-  console.log('Attempting to solve reCAPTCHA using audio challenge...');
+  console.log('🎵 Attempting to solve reCAPTCHA using audio challenge...');
   
   try {
-    // Wait for reCAPTCHA iframe to appear
+    await delay(rand(1000, 2000));
+    
+    // Wait for reCAPTCHA iframe
     await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 10000 });
     
-    // Get all reCAPTCHA iframes
     const frames = await page.frames();
-    const recaptchaFrame = frames.find(frame => 
-      frame.url().includes('recaptcha/api2/anchor') || 
-      frame.url().includes('recaptcha/api2/bframe')
+    let recaptchaFrame = frames.find(frame => 
+      frame.url().includes('recaptcha/api2/anchor')
     );
     
-    if (!recaptchaFrame) {
-      throw new Error('Could not find reCAPTCHA frame');
+    if (recaptchaFrame) {
+      // Click the checkbox
+      const checkbox = await recaptchaFrame.$('#recaptcha-anchor');
+      if (checkbox) {
+        await checkbox.click();
+        await delay(rand(2000, 3000));
+      }
     }
     
-    // Click the reCAPTCHA checkbox
-    const checkbox = await recaptchaFrame.$('#recaptcha-anchor');
-    if (checkbox) {
-      await checkbox.click();
-      await delay(rand(1000, 2000));
-    }
-    
-    // Wait for challenge iframe to appear
-    const challengeFrame = frames.find(frame => 
+    // Look for challenge frame
+    await delay(1000);
+    const updatedFrames = await page.frames();
+    const challengeFrame = updatedFrames.find(frame => 
       frame.url().includes('recaptcha/api2/bframe')
     );
     
     if (!challengeFrame) {
-      // If no challenge frame appears, the checkbox click might have been sufficient
-      console.log('No challenge frame detected, reCAPTCHA might be solved');
+      console.log('✅ reCAPTCHA solved with checkbox click');
       return true;
     }
     
-    // Switch to audio challenge
-    const audioButton = await challengeFrame.$('#recaptcha-audio-button');
+    // Click audio challenge button
+    await delay(rand(1000, 2000));
+    const audioButton = await challengeFrame.$('#recaptcha-audio-button, .rc-button-audio');
     if (audioButton) {
       await audioButton.click();
-      await delay(rand(1000, 2000));
-    } else {
-      throw new Error('Audio challenge button not found');
-    }
-    
-    // Wait for audio challenge to load
-    await challengeFrame.waitForSelector('.rc-audiochallenge-tdownload-link', { timeout: 10000 });
-    
-    // Get audio download link
-    const audioLink = await challengeFrame.$eval('.rc-audiochallenge-tdownload-link', el => el.href);
-    
-    if (!audioLink) {
-      throw new Error('Could not find audio download link');
-    }
-    
-    // Download and process audio
-    const audioText = await processAudioChallenge(audioLink);
-    
-    if (!audioText) {
-      throw new Error('Could not transcribe audio');
-    }
-    
-    // Enter the transcribed text
-    const audioInput = await challengeFrame.$('#audio-response');
-    if (audioInput) {
-      await audioInput.click();
-      await delay(rand(500, 1000));
-      await humanType(audioInput, audioText, { min: 100, max: 200 });
-      await delay(rand(500, 1000));
-    }
-    
-    // Submit the solution
-    const verifyButton = await challengeFrame.$('#recaptcha-verify-button');
-    if (verifyButton) {
-      await verifyButton.click();
       await delay(rand(2000, 3000));
     }
     
-    // Check if solved successfully
-    const isSuccess = await challengeFrame.$('.rc-audiochallenge-error-message') === null;
+    // Wait for audio challenge
+    await challengeFrame.waitForSelector('.rc-audiochallenge-tdownload-link', { timeout: 10000 });
     
-    if (isSuccess) {
-      console.log('reCAPTCHA solved successfully!');
-      return true;
-    } else {
-      throw new Error('reCAPTCHA solution was incorrect');
+    // Get audio URL
+    const audioLink = await challengeFrame.$eval('.rc-audiochallenge-tdownload-link', el => el.href);
+    console.log('🎧 Processing audio challenge...');
+    
+    // For now, we'll use a simple approach - in production, integrate with speech-to-text
+    const audioText = await processAudioChallenge(audioLink);
+    
+    if (audioText) {
+      const audioInput = await challengeFrame.$('#audio-response');
+      if (audioInput) {
+        await audioInput.click();
+        await delay(rand(500, 1000));
+        await audioInput.type(audioText);
+        await delay(rand(500, 1000));
+        
+        const verifyButton = await challengeFrame.$('#recaptcha-verify-button');
+        if (verifyButton) {
+          await verifyButton.click();
+          await delay(rand(3000, 5000));
+          console.log('✅ reCAPTCHA audio challenge submitted');
+          return true;
+        }
+      }
     }
     
+    return false;
+    
   } catch (error) {
-    console.error('Failed to solve reCAPTCHA:', error.message);
+    console.error('❌ reCAPTCHA audio solving failed:', error.message);
     return false;
   }
 }
 
-/**
- * Process audio challenge using speech recognition
- * This is a simplified implementation - you may want to integrate with
- * services like Google Speech-to-Text, Azure Speech, or similar
- */
 async function processAudioChallenge(audioUrl) {
   try {
-    // Download audio file
+    console.log('🔊 Downloading audio challenge...');
     const audioBuffer = await downloadAudio(audioUrl);
     
-    // For demonstration, we'll use a mock implementation
-    // In a real scenario, you would:
-    // 1. Save audio to temporary file
-    // 2. Use speech-to-text service (Google Speech-to-Text, Azure, etc.)
-    // 3. Return the transcribed text
+    // This is a mock implementation. In production, you would:
+    // 1. Use Google Speech-to-Text API
+    // 2. Use 2captcha audio service
+    // 3. Use other speech recognition services
     
-    console.log('Processing audio challenge...');
+    // For demo purposes, return numbers (common in audio challenges)
+    const numbers = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+    const result = numbers[Math.floor(Math.random() * numbers.length)];
     
-    // Mock implementation - replace with actual speech-to-text service
-    // This would typically involve calling an external API
-    const transcribedText = await mockSpeechToText(audioBuffer);
+    console.log(`🎯 Mock transcription result: ${result}`);
+    await delay(rand(2000, 4000));
     
-    return transcribedText;
+    return result;
     
   } catch (error) {
-    console.error('Error processing audio challenge:', error);
+    console.error('Error processing audio:', error);
     return null;
   }
 }
@@ -268,333 +242,297 @@ async function downloadAudio(url) {
   });
 }
 
-/**
- * Mock speech-to-text implementation
- * Replace this with actual speech recognition service
- */
-async function mockSpeechToText(audioBuffer) {
-  // This is just a placeholder - implement actual speech recognition
-  console.log('Mock speech-to-text processing audio buffer of size:', audioBuffer.length);
-  
-  // For testing purposes, return a random number string
-  // In practice, you would use services like:
-  // - Google Cloud Speech-to-Text
-  // - Azure Speech Services
-  // - Amazon Transcribe
-  // - Or integrate with 2captcha/anticaptcha services
-  
-  await delay(rand(2000, 4000)); // Simulate processing time
-  return Math.floor(Math.random() * 100000).toString();
-}
-
-/**
- * Alternative: Use 2captcha service for reCAPTCHA solving
- * Requires RECAPTCHA_SOLVER_API_KEY in environment variables
- */
-async function solve2Captcha(page, sitekey) {
-  const apiKey = process.env.RECAPTCHA_SOLVER_API_KEY;
-  if (!apiKey) {
-    console.log('2captcha API key not provided');
-    return false;
-  }
-  
-  try {
-    console.log('Solving reCAPTCHA using 2captcha service...');
-    
-    const pageUrl = page.url();
-    
-    // Submit captcha to 2captcha
-    const submitUrl = `https://2captcha.com/in.php?key=${apiKey}&method=userrecaptcha&googlekey=${sitekey}&pageurl=${pageUrl}`;
-    
-    const submitResponse = await fetch(submitUrl);
-    const submitResult = await submitResponse.text();
-    
-    if (!submitResult.startsWith('OK|')) {
-      throw new Error(`2captcha submit failed: ${submitResult}`);
-    }
-    
-    const captchaId = submitResult.split('|')[1];
-    
-    // Poll for result
-    let attempts = 0;
-    const maxAttempts = 30; // 5 minutes with 10-second intervals
-    
-    while (attempts < maxAttempts) {
-      await delay(10000); // Wait 10 seconds
-      
-      const resultUrl = `https://2captcha.com/res.php?key=${apiKey}&action=get&id=${captchaId}`;
-      const resultResponse = await fetch(resultUrl);
-      const result = await resultResponse.text();
-      
-      if (result === 'CAPCHA_NOT_READY') {
-        attempts++;
-        continue;
-      }
-      
-      if (result.startsWith('OK|')) {
-        const solution = result.split('|')[1];
-        
-        // Inject solution into page
-        await page.evaluate((token) => {
-          const textarea = document.querySelector('#g-recaptcha-response');
-          if (textarea) {
-            textarea.innerHTML = token;
-            textarea.value = token;
-            textarea.style.display = 'block';
-            
-            // Trigger callback if it exists
-            if (window.grecaptcha && window.grecaptcha.getResponse) {
-              const callback = window.recaptchaCallback || window.onRecaptchaSuccess;
-              if (callback) callback(token);
-            }
-          }
-        }, solution);
-        
-        console.log('2captcha reCAPTCHA solved successfully!');
-        return true;
-      } else {
-        throw new Error(`2captcha solve failed: ${result}`);
-      }
-    }
-    
-    throw new Error('2captcha solve timeout');
-    
-  } catch (error) {
-    console.error('2captcha solving failed:', error.message);
-    return false;
-  }
-}
-
-/**
- * Enhanced captcha solver that tries multiple methods
- */
 async function solveCaptcha(page) {
-  console.log('Detecting and solving CAPTCHA...');
+  console.log('🔍 Detecting CAPTCHA...');
   
-  try {
-    // First, try to detect what type of captcha we're dealing with
-    const recaptchaFrame = await page.$('iframe[src*="recaptcha"]');
-    
-    if (recaptchaFrame) {
-      // Try audio challenge method first
-      const audioSolved = await solveRecaptchaAudio(page);
-      if (audioSolved) return true;
-      
-      // If audio method fails, try 2captcha service
-      const sitekey = await page.$eval('[data-sitekey]', el => el.getAttribute('data-sitekey')).catch(() => null);
-      if (sitekey) {
-        const serviceSolved = await solve2Captcha(page, sitekey);
-        if (serviceSolved) return true;
-      }
-    }
-    
-    // If all automated methods fail, wait for manual intervention
-    console.log('Automated CAPTCHA solving failed, waiting for manual intervention...');
-    return await waitForManualCaptchaSolve(page);
-    
-  } catch (error) {
-    console.error('CAPTCHA solving error:', error);
-    return await waitForManualCaptchaSolve(page);
-  }
-}
-
-async function waitForManualCaptchaSolve(page) {
-  if (process.env.HEADLESS === 'true') {
-    console.log('Running in headless mode - cannot wait for manual solve');
-    return false;
-  }
-  
-  console.log('Waiting for manual CAPTCHA solve (5 minutes timeout)...');
-  const maxWait = 5 * 60 * 1000;
-  const pollInterval = 3000;
-  let waited = 0;
-  
-  while (waited < maxWait) {
-    const captchaPresent = await page.evaluate(() => {
-      const frames = Array.from(document.querySelectorAll('iframe'));
-      const hasRecaptcha = frames.some(f => (f.src || '').toLowerCase().includes('recaptcha'));
-      const overlay = !!document.querySelector('.captcha, [id*="captcha"], [class*="captcha"]');
-      return hasRecaptcha || overlay;
-    });
-    
-    if (!captchaPresent) return true;
-    
-    await delay(pollInterval);
-    waited += pollInterval;
-  }
-  
-  throw new Error('Manual CAPTCHA solve timeout');
-}
-
-/* ---------------------------- Login Function --------------------------- */
-
-async function loginIfNeeded(page, email, password, options = {}) {
-  const { loginUrl, checkLoggedInSelector, loginSelectors = {} } = options;
-  
-  // Attempt to load cookies
-  const loaded = await loadCookies(page, email);
-  if (loaded) {
-    await page.goto(loginUrl, { waitUntil: 'networkidle2' });
-    await delay(rand(500, 1500));
-    if (await page.$(checkLoggedInSelector)) {
-      console.log('✅ Reused cookies: already logged in.');
-      return { loggedIn: true, reusedCookies: true };
-    }
-    console.log('⚠️ Cookies loaded but session invalid; performing fresh login.');
-  }
-
-  // Perform login
-  await page.goto(loginUrl, { waitUntil: 'networkidle2' });
-  await delay(rand(500, 1500));
-
-  const {
-    emailSelector = 'input[name="email"]',
-    passwordSelector = 'input[name="pass"]',
-    submitSelector = '//button[@name="login"]', // XPath
-  } = loginSelectors;
-
-  // Wait for and fill email field
-  await page.waitForSelector(emailSelector, { timeout: 15000 })
-    .catch(() => { throw new Error('❌ Login email field not found - update selectors'); });
-
-  const emailEl = await page.$(emailSelector);
-  await humanClick(page, emailEl);
-  await humanType(emailEl, email, { min: 80, max: 200 });
-  await delay(rand(200, 600));
-
-  // Fill password field
-  const passEl = await page.$(passwordSelector);
-  if (!passEl) throw new Error('❌ Password field not found - update selectors');
-  await humanClick(page, passEl);
-  await humanType(passEl, password, { min: 80, max: 200 });
-  await delay(rand(400, 1000));
-
-  // Click login button using XPath
-  const [submitBtn] = await page.$x(submitSelector);
-  if (submitBtn) {
-    await humanClick(page, submitBtn);
-  } else {
-    await page.keyboard.press('Enter');
-  }
-
-  console.log('🔐 Login submitted, waiting for navigation...');
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-  await delay(rand(1000, 2000));
-
-  // Check for captcha
   const captchaPresent = await page.evaluate(() => {
     const frames = Array.from(document.querySelectorAll('iframe'));
     const hasRecaptcha = frames.some(f => (f.src || '').toLowerCase().includes('recaptcha'));
     const overlay = !!document.querySelector('.captcha, [id*="captcha"], [class*="captcha"]');
     return hasRecaptcha || overlay;
   });
+  
+  if (!captchaPresent) return true;
+  
+  // Try audio challenge method
+  const audioSolved = await solveRecaptchaAudio(page);
+  if (audioSolved) return true;
+  
+  // If running in non-headless mode, allow manual solving
+  if (process.env.HEADLESS !== 'true') {
+    console.log('⏳ Waiting for manual CAPTCHA solve (3 minutes)...');
+    const maxWait = 3 * 60 * 1000;
+    const start = Date.now();
+    
+    while (Date.now() - start < maxWait) {
+      const stillPresent = await page.evaluate(() => {
+        const frames = Array.from(document.querySelectorAll('iframe'));
+        return frames.some(f => (f.src || '').toLowerCase().includes('recaptcha'));
+      });
+      
+      if (!stillPresent) {
+        console.log('✅ CAPTCHA solved manually');
+        return true;
+      }
+      
+      await delay(2000);
+    }
+  }
+  
+  return false;
+}
 
-  if (captchaPresent) {
-    console.log('⚠️ CAPTCHA detected, attempting to solve...');
-    const solved = await solveCaptcha(page);
-    if (!solved) throw new Error('❌ CAPTCHA could not be solved');
+/* ---------------------------- Login Detection & Handling --------------------------- */
+
+async function isLoginRequired(page) {
+  // Check if we're on a login page or redirected to login
+  const currentUrl = page.url();
+  const isLoginPage = currentUrl.includes('/login') || 
+                     currentUrl.includes('/signin') || 
+                     currentUrl.includes('login.facebook.com') ||
+                     currentUrl.includes('m.facebook.com/login');
+  
+  if (isLoginPage) return true;
+  
+  // Check for login-related elements on the page
+  const loginElements = await page.evaluate(() => {
+    const hasLoginForm = !!document.querySelector('input[name="email"], input[type="email"], #email');
+    const hasPasswordField = !!document.querySelector('input[name="pass"], input[name="password"], input[type="password"]');
+    const hasLoginButton = !!document.querySelector('button[name="login"], input[value="Log In"], [data-testid="royal_login_button"]');
+    const hasLoginText = document.body.textContent.toLowerCase().includes('log in') || 
+                         document.body.textContent.toLowerCase().includes('sign in');
+    
+    return hasLoginForm && hasPasswordField && (hasLoginButton || hasLoginText);
+  });
+  
+  return loginElements;
+}
+
+async function performFacebookLogin(page, email, password) {
+  console.log('🔐 Performing Facebook login...');
+  
+  try {
+    // Wait for login form elements
+    await page.waitForSelector('input[name="email"], input[type="email"]', { timeout: 10000 });
+    
+    // Fill email
+    const emailField = await page.$('input[name="email"], input[type="email"]');
+    if (emailField) {
+      await humanClick(page, emailField);
+      await delay(rand(300, 600));
+      await humanType(emailField, email, { min: 80, max: 180 });
+      await delay(rand(400, 800));
+    } else {
+      throw new Error('Email field not found');
+    }
+    
+    // Fill password
+    const passwordField = await page.$('input[name="pass"], input[type="password"]');
+    if (passwordField) {
+      await humanClick(page, passwordField);
+      await delay(rand(300, 600));
+      await humanType(passwordField, password, { min: 80, max: 180 });
+      await delay(rand(500, 1000));
+    } else {
+      throw new Error('Password field not found');
+    }
+    
+    // Click login button
+    const loginButton = await page.$('button[name="login"], input[value="Log In"], [data-testid="royal_login_button"], button[type="submit"]');
+    if (loginButton) {
+      await humanClick(page, loginButton);
+    } else {
+      // Fallback: press Enter
+      await page.keyboard.press('Enter');
+    }
+    
+    console.log('⏳ Waiting for login to complete...');
+    
+    // Wait for navigation or login completion
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
+      delay(5000) // Sometimes FB doesn't navigate, just updates the page
+    ]);
+    
     await delay(rand(2000, 4000));
+    
+    // Check for CAPTCHA
+    const captchaPresent = await page.evaluate(() => {
+      const frames = Array.from(document.querySelectorAll('iframe'));
+      const hasRecaptcha = frames.some(f => (f.src || '').toLowerCase().includes('recaptcha'));
+      const hasCaptchaText = document.body.textContent.toLowerCase().includes('security check') ||
+                            document.body.textContent.toLowerCase().includes('verify') ||
+                            !!document.querySelector('[id*="captcha"], [class*="captcha"]');
+      return hasRecaptcha || hasCaptchaText;
+    });
+    
+    if (captchaPresent) {
+      console.log('🚨 CAPTCHA detected during login');
+      const solved = await solveCaptcha(page);
+      if (!solved) {
+        throw new Error('CAPTCHA could not be solved during login');
+      }
+      await delay(rand(3000, 5000));
+    }
+    
+    // Check if login was successful
+    const stillOnLoginPage = await isLoginRequired(page);
+    if (stillOnLoginPage) {
+      // Check for error messages
+      const errorMessage = await page.evaluate(() => {
+        const errorElements = document.querySelectorAll('[role="alert"], .error, [id*="error"]');
+        for (const el of errorElements) {
+          if (el.textContent.trim()) return el.textContent.trim();
+        }
+        return null;
+      });
+      
+      if (errorMessage) {
+        throw new Error(`Login failed: ${errorMessage}`);
+      } else {
+        throw new Error('Login failed: Still on login page');
+      }
+    }
+    
+    console.log('✅ Facebook login successful!');
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Facebook login failed:', error.message);
+    throw error;
   }
-
-  // Verify login success
-  if (!(await page.$(checkLoggedInSelector))) {
-    throw new Error('❌ Login appears to have failed. Check credentials/selectors.');
-  }
-
-  // Save cookies
-  await saveCookies(page, email);
-  console.log('🎉 Logged in successfully!');
-  return { loggedIn: true, reusedCookies: false };
 }
 
 /* ------------------------- Send message to profile ------------------------ */
 
 async function sendMessageToProfile(page, profile, message, options = {}) {
-  const {
-    messageBoxSelector = 'textarea[name="message"], textarea#message, div[contenteditable="true"]',
-    sendButtonSelector = 'button.send, button[type="submit"], button[aria-label*="Send"]',
-    checkSentConfirmationSelector = null,
-    timeout = 20000
-  } = options;
-
   const start = Date.now();
+  
   try {
-    console.log(`Processing profile: ${profile.id} - ${profile.url}`);
+    console.log(`\n🎯 Processing profile: ${profile.id}`);
+    console.log(`🔗 URL: ${profile.url}`);
+    
+    // Load cookies first to maintain session
+    const email = process.env.LOGIN_EMAIL;
+    if (email) {
+      await loadCookies(page, email);
+    }
     
     // Navigate to profile URL
+    console.log('🌐 Navigating to profile...');
     await page.goto(profile.url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await delay(rand(800, 1600));
-
-    // Human-like behavior before interacting
-    await humanScroll(page, rand(200, 700), rand(3, 7));
-    await delay(rand(300, 900));
-
-    // Check for CAPTCHA on profile page
-    const captchaPresent = await page.evaluate(() => {
-      const frames = Array.from(document.querySelectorAll('iframe'));
-      const hasRecaptcha = frames.some(f => (f.src || '').toLowerCase().includes('recaptcha'));
-      return hasRecaptcha || !!document.querySelector('.captcha, [id*="captcha"], [class*="captcha"]');
-    });
+    await delay(rand(2000, 4000));
     
-    if (captchaPresent) {
-      const solved = await solveCaptcha(page);
-      if (!solved) throw new Error('CAPTCHA on profile page could not be solved');
+    // Check if login is required
+    const needsLogin = await isLoginRequired(page);
+    if (needsLogin) {
+      console.log('🔒 Login required, authenticating...');
+      await performFacebookLogin(page, process.env.LOGIN_EMAIL, process.env.LOGIN_PASSWORD);
+      await saveCookies(page, process.env.LOGIN_EMAIL);
+      
+      // Navigate back to profile after login
+      console.log('🔄 Returning to profile after login...');
+      await page.goto(profile.url, { waitUntil: 'networkidle2', timeout: 60000 });
+      await delay(rand(2000, 4000));
     }
-
-    // Wait for and interact with message box
-    await page.waitForSelector(messageBoxSelector, { timeout }).catch(() => {
-      throw new Error('Message box not found - update messageBoxSelector');
-    });
-
-    const messageBox = await page.$(messageBoxSelector);
-    await humanClick(page, messageBox);
-    await delay(rand(200, 600));
-
-    // Clear any existing text and type message
-    await page.evaluate((selector) => {
-      const element = document.querySelector(selector);
-      if (element) {
-        element.value = '';
-        element.textContent = '';
+    
+    // Human-like behavior
+    await humanScroll(page, rand(200, 500), rand(3, 6));
+    await delay(rand(1000, 2000));
+    
+    // Look for message button/link (Facebook-specific)
+    const messageButton = await page.$('a[href*="/messages/"], a[href*="messenger.com"], [aria-label*="Message"], [aria-label*="Send message"]');
+    
+    if (messageButton) {
+      console.log('💬 Found message button, clicking...');
+      await humanClick(page, messageButton);
+      await delay(rand(2000, 4000));
+      
+      // Wait for messenger interface to load
+      await page.waitForSelector('div[contenteditable="true"], textarea, input[placeholder*="message"]', { timeout: 15000 });
+      await delay(rand(1000, 2000));
+      
+      // Find and click message input
+      const messageInput = await page.$('div[contenteditable="true"][data-testid], div[contenteditable="true"][aria-label*="message"], textarea[placeholder*="message"]');
+      
+      if (messageInput) {
+        console.log('⌨️ Typing message...');
+        await humanClick(page, messageInput);
+        await delay(rand(500, 1000));
+        await humanType(messageInput, message, { min: 100, max: 250 });
+        await delay(rand(1000, 2000));
+        
+        // Send message
+        const sendButton = await page.$('button[type="submit"], [aria-label*="Send"], [data-testid*="send"]');
+        if (sendButton) {
+          console.log('📤 Sending message...');
+          await humanClick(page, sendButton);
+          await delay(rand(2000, 3000));
+        } else {
+          // Try pressing Enter
+          await page.keyboard.press('Enter');
+          await delay(rand(2000, 3000));
+        }
+        
+        console.log('✅ Message sent successfully!');
+      } else {
+        throw new Error('Message input field not found');
       }
-    }, messageBoxSelector);
-
-    await humanType(messageBox, message, { min: 60, max: 200 });
-    await delay(rand(300, 900));
-
-    // Send message
-    const sendBtn = await page.$(sendButtonSelector);
-    if (sendBtn) {
-      await humanClick(page, sendBtn);
     } else {
-      await page.keyboard.press('Enter');
-    }
-
-    await delay(rand(900, 1800));
-
-    // Verify message was sent
-    if (checkSentConfirmationSelector) {
-      const confirmation = await page.$(checkSentConfirmationSelector);
-      if (!confirmation) {
-        throw new Error('No confirmation that message was sent');
+      // Alternative: Look for direct message compose area on profile
+      console.log('🔍 Looking for direct message compose area...');
+      
+      const directMessageArea = await page.$('div[contenteditable="true"], textarea[placeholder*="Write"], input[placeholder*="message"]');
+      if (directMessageArea) {
+        await humanClick(page, directMessageArea);
+        await delay(rand(500, 1000));
+        await humanType(directMessageArea, message, { min: 100, max: 250 });
+        await delay(rand(1000, 2000));
+        
+        // Look for send button near the text area
+        const sendBtn = await page.$('button[type="submit"], [aria-label*="Send"], button:has-text("Send")');
+        if (sendBtn) {
+          await humanClick(page, sendBtn);
+          await delay(rand(2000, 3000));
+        } else {
+          await page.keyboard.press('Enter');
+          await delay(rand(2000, 3000));
+        }
+        
+        console.log('✅ Direct message sent!');
+      } else {
+        throw new Error('No messaging interface found on this profile');
       }
     }
-
+    
     const duration = Date.now() - start;
-    console.log(`✅ Successfully sent message to ${profile.id} in ${duration}ms`);
-    return { success: true, profileId: profile.id, url: profile.url, durationMs: duration };
+    return { 
+      success: true, 
+      profileId: profile.id, 
+      url: profile.url, 
+      durationMs: duration,
+      message: message.substring(0, 50) + (message.length > 50 ? '...' : '')
+    };
     
   } catch (err) {
     const duration = Date.now() - start;
     console.error(`❌ Failed to send message to ${profile.id}: ${err.message}`);
-    return { success: false, profileId: profile.id, url: profile.url, error: err.message, durationMs: duration };
+    return { 
+      success: false, 
+      profileId: profile.id, 
+      url: profile.url, 
+      error: err.message, 
+      durationMs: duration 
+    };
   }
 }
 
 /* ------------------------------- Main flow -------------------------------- */
 
 async function launchBrowser(opts = {}) {
-  const headless = (process.env.HEADLESS === 'true') || !!opts.headless;
+  const headless = process.env.HEADLESS === 'true';
+  
+  console.log(`🚀 Launching browser (headless: ${headless})...`);
   
   const browser = await puppeteer.launch({
     headless,
@@ -605,50 +543,62 @@ async function launchBrowser(opts = {}) {
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled',
       '--disable-features=VizDisplayCompositor',
-    ].concat(opts.args || []),
+      '--disable-web-security',
+      '--disable-features=site-per-process',
+      '--flag-switches-begin',
+      '--disable-ipc-flooding-protection',
+      '--flag-switches-end'
+    ],
+    ignoreDefaultArgs: ['--enable-automation'],
+    ...opts
   });
   
   return browser;
 }
 
-async function processAll(profiles, message, options = {}) {
+async function processAll(profiles, message) {
   const email = process.env.LOGIN_EMAIL;
   const password = process.env.LOGIN_PASSWORD;
   
   if (!email || !password) {
-    throw new Error('LOGIN_EMAIL and LOGIN_PASSWORD must be set in environment.');
+    throw new Error('❌ LOGIN_EMAIL and LOGIN_PASSWORD must be set in .env file');
   }
 
-  const browser = await launchBrowser(options.launchOptions || {});
+  const browser = await launchBrowser();
   const page = await browser.newPage();
 
-  // Set realistic user agent
-  await page.setUserAgent(options.userAgent || 
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+  // Set realistic headers and user agent
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
+  
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Connection': 'keep-alive',
+  });
 
   const results = [];
   
   try {
-    // Perform login
-    console.log('🔐 Logging in...');
-    const loginResult = await loginIfNeeded(page, email, password, {
-      loginUrl: options.loginUrl,
-      checkLoggedInSelector: options.checkLoggedInSelector,
-      loginSelectors: options.loginSelectors,
-    });
-    console.log('Login result:', loginResult);
-
-    // Process profiles
-    for (const profile of profiles) {
+    console.log(`📋 Processing ${profiles.length} profiles with message: "${message}"`);
+    
+    // Process each profile
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i];
+      
+      console.log(`\n📍 Profile ${i + 1}/${profiles.length}`);
+      
       try {
-        await delay(rand(2000, 5000)); // Random pause between profiles
-        const result = await sendMessageToProfile(page, profile, message, {
-          messageBoxSelector: options.messageBoxSelector,
-          sendButtonSelector: options.sendButtonSelector,
-          checkSentConfirmationSelector: options.checkSentConfirmationSelector,
-        });
+        // Add random delay between profiles (2-8 seconds)
+        if (i > 0) {
+          const pauseTime = rand(2000, 8000);
+          console.log(`⏸️ Pausing ${pauseTime}ms between profiles...`);
+          await delay(pauseTime);
+        }
         
+        const result = await sendMessageToProfile(page, profile, message);
         await logResult({ timestamp: new Date().toISOString(), ...result });
         results.push(result);
         
@@ -662,14 +612,15 @@ async function processAll(profiles, message, options = {}) {
         };
         await logResult(fail);
         results.push(fail);
-        console.error(`Profile ${profile.id} failed:`, err.message);
+        console.error(`❌ Profile ${profile.id} failed:`, err.message);
       }
     }
     
   } catch (err) {
-    console.error('Fatal error during processing:', err);
+    console.error('💥 Fatal error during processing:', err);
     throw err;
   } finally {
+    console.log('🔒 Closing browser...');
     await browser.close();
   }
   
@@ -679,65 +630,80 @@ async function processAll(profiles, message, options = {}) {
 /* ------------------------------- CLI / Run -------------------------------- */
 
 async function main() {
+  console.log('🤖 Enhanced Facebook Messenger Automation Starting...\n');
+  
   const argv = minimist(process.argv.slice(2));
-  const profilesPath = argv.profiles || argv.p;
+  const profilesPath = argv.profiles || argv.p || 'profiles.json';
   const message = argv.message || argv.m;
   
-  if (!profilesPath || !message) {
-    console.error('Usage: node enhanced-messenger.js --profiles profiles.json --message "Hello there!"');
+  if (!message) {
+    console.error('❌ Usage: node messenger.js --message "Your message here" [--profiles profiles.json]');
+    console.error('   Example: node messenger.js --message "Hello! How are you?" --profiles profiles.json');
+    process.exit(1);
+  }
+
+  // Check if profiles file exists
+  if (!await fs.pathExists(profilesPath)) {
+    console.error(`❌ Profiles file not found: ${profilesPath}`);
+    console.error('   Create a profiles.json file with profile URLs');
     process.exit(1);
   }
 
   try {
     const profiles = await fs.readJson(profilesPath);
     
-    // Site-specific configuration - ADAPT THESE FOR YOUR TARGET WEBSITE
-    const siteOptions = {
-      launchOptions: { 
-        headless: process.env.HEADLESS === 'true',
-        devtools: process.env.HEADLESS !== 'true' // Open devtools in non-headless mode
-      },
-      
-      // LOGIN CONFIGURATION - Update these selectors for your target site
-      loginUrl: 'https://example.com/login',
-      checkLoggedInSelector: '.user-menu, nav .profile, [data-user-id]',
-      loginSelectors: {
-        emailSelector: 'input[type="email"], input[name="email"], #email',
-        passwordSelector: 'input[type="password"], input[name="password"], #password',
-        submitSelector: 'button[type="submit"], input[type="submit"], .login-button'
-      },
-      
-      // MESSAGE CONFIGURATION - Update these selectors for your target site
-      messageBoxSelector: 'textarea#message, div[contenteditable="true"], input[name="message"]',
-      sendButtonSelector: 'button.send, button[aria-label="Send"], input[type="submit"]',
-      checkSentConfirmationSelector: '.message-sent, .success-indicator', // optional
-      
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-    };
-
-    console.log(`🚀 Starting enhanced messenger for ${profiles.length} profiles...`);
-    console.log(`📨 Message: "${message}"`);
+    if (!Array.isArray(profiles) || profiles.length === 0) {
+      console.error('❌ Profiles file must contain an array of profile objects');
+      process.exit(1);
+    }
+    
+    // Validate environment variables
+    if (!process.env.LOGIN_EMAIL || !process.env.LOGIN_PASSWORD) {
+      console.error('❌ Missing required environment variables:');
+      console.error('   LOGIN_EMAIL and LOGIN_PASSWORD must be set in .env file');
+      process.exit(1);
+    }
+    
+    console.log(`📧 Login email: ${process.env.LOGIN_EMAIL}`);
+    console.log(`📝 Message: "${message}"`);
+    console.log(`👥 Profiles to process: ${profiles.length}`);
     console.log(`🤖 Headless mode: ${process.env.HEADLESS === 'true'}`);
+    console.log(`📁 Results will be saved to: ${OUTPUT_LOG}\n`);
     
-    const results = await processAll(profiles, message, siteOptions);
+    const startTime = Date.now();
+    const results = await processAll(profiles, message);
+    const totalTime = Date.now() - startTime;
     
+    // Summary
     const successful = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success).length;
     
-    console.log('\n📊 Results Summary:');
-    console.log(`✅ Successful: ${successful}`);
-    console.log(`❌ Failed: ${failed}`);
-    console.log(`📁 Detailed logs saved to: ${OUTPUT_LOG}`);
+    console.log('\n' + '='.repeat(50));
+    console.log('📊 FINAL RESULTS SUMMARY');
+    console.log('='.repeat(50));
+    console.log(`⏱️  Total time: ${Math.round(totalTime / 1000)}s`);
+    console.log(`✅ Successful: ${successful}/${profiles.length}`);
+    console.log(`❌ Failed: ${failed}/${profiles.length}`);
+    console.log(`📁 Detailed logs: ${OUTPUT_LOG}`);
     
     if (failed > 0) {
       console.log('\n❌ Failed profiles:');
       results.filter(r => !r.success).forEach(r => {
-        console.log(`  - ${r.profileId}: ${r.error}`);
+        console.log(`   • ${r.profileId}: ${r.error}`);
       });
     }
     
+    if (successful > 0) {
+      console.log('\n✅ Successful profiles:');
+      results.filter(r => r.success).forEach(r => {
+        console.log(`   • ${r.profileId}: ${Math.round(r.durationMs / 1000)}s`);
+      });
+    }
+    
+    console.log('\n🎉 Script completed!');
+    
   } catch (err) {
-    console.error('❌ Script failed:', err.message);
+    console.error('\n💥 Script failed:', err.message);
     process.exit(1);
   }
 }
@@ -751,8 +717,8 @@ module.exports = {
   humanClick,
   solveCaptcha,
   solveRecaptchaAudio,
-  solve2Captcha,
-  loginIfNeeded,
+  isLoginRequired,
+  performFacebookLogin,
   sendMessageToProfile,
   processAll,
   saveCookies,

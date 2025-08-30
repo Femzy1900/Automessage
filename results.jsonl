@@ -1,0 +1,2 @@
+{"timestamp":"2025-08-30T19:00:54.565Z","success":false,"profileId":"profile-001","url":"https://www.facebook.com/terri.lopez.9659283","error":"Login failed: Still on login page","durationMs":73058}
+{"timestamp":"2025-08-30T19:01:03.874Z","success":false,"profileId":"profile-002","url":"https://www.facebook.com/profile.php?id=61559986547821","error":"Navigating frame was detached","durationMs":5144}
