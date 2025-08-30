@@ -2,3 +2,5 @@
 {"timestamp":"2025-08-30T19:01:03.874Z","success":false,"profileId":"profile-002","url":"https://www.facebook.com/profile.php?id=61559986547821","error":"Navigating frame was detached","durationMs":5144}
 {"timestamp":"2025-08-30T19:04:30.187Z","success":false,"profileId":"profile-001","url":"https://www.facebook.com/terri.lopez.9659283","error":"Navigation timeout of 60000 ms exceeded","durationMs":111319}
 {"timestamp":"2025-08-30T19:05:58.412Z","success":false,"profileId":"profile-002","url":"https://www.facebook.com/profile.php?id=61559986547821","error":"Navigation timeout of 60000 ms exceeded","durationMs":82154}
+{"timestamp":"2025-08-30T19:13:56.601Z","success":false,"profileId":"profile-001","url":"https://www.facebook.com/terri.lopez.9659283","error":"Profile appears to be blocked, restricted, or not found","durationMs":13820}
+{"timestamp":"2025-08-30T19:15:12.003Z","success":false,"profileId":"profile-002","url":"https://www.facebook.com/profile.php?id=61559986547821","error":"Profile appears to be blocked, restricted, or not found","durationMs":66687}
