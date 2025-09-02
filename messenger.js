@@ -591,10 +591,10 @@ async function sendMessageToProfile(page, profile, message, options = {}) {
 
 
     if (messageButton) {
-      messageButtonPresent = "Yes"; // ✅ Track presence
+    
       console.log("🖱️ Clicking message button..");
       await humanClick(page, messageButton);
-
+      messageButtonPresent = "Yes"; // ✅ Track presence
       await Promise.race([
         page.waitForSelector('div[contenteditable="true"]', { timeout: 15000 }),
         page.waitForSelector("textarea", { timeout: 15000 }),

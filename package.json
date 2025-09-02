@@ -15,7 +15,7 @@
     "fs-extra": "^11.3.1",
     "minimist": "^1.2.8",
     "nodemon": "^3.1.10",
-    "puppeteer": "^24.17.1",
+    "puppeteer": "^24.18.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
